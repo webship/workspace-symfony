@@ -1,0 +1,97 @@
+{
+  "name": "@webship.co/workspace-symfony",
+  "version": "1.0.0",
+  "description": "Symfony for Webship Workspace: the builder (`cmd-symfony-project.sh`, a new web app or the official demo application) and the console tool in every sites folder, the default accounts, the Symfony step pack wired into the testing setup, and its AI items in their folders: two agents, a skill, a command and two prompts.",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/webship/workspace-symfony.git"
+  },
+  "files": [
+    "dist/src",
+    "ai",
+    "commands",
+    "features",
+    "scripts",
+    "testing",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "workspacePlugin": {
+    "name": "symfony",
+    "label": "Symfony",
+    "needs": [
+      [
+        "dev",
+        "test",
+        "sandboxes",
+        "demos"
+      ],
+      "ai-agents",
+      "ai-skills",
+      "ai-commands",
+      "ai-prompts"
+    ],
+    "commands": {
+      "types": [
+        "sites"
+      ],
+      "workspaces": [
+        "dev",
+        "test",
+        "sandboxes",
+        "demos"
+      ],
+      "files": [
+        "commands/cmd-symfony-project.sh",
+        "commands/cmd-tools-symfony-console.sh"
+      ]
+    },
+    "scripts": {
+      "functions": [
+        "scripts/functions/fun-symfony.sh"
+      ],
+      "args": [
+        "scripts/args/arg-symfony.sh",
+        "scripts/args/arg-symfony-console.sh"
+      ],
+      "machine": [
+        "testing/site.feature"
+      ]
+    },
+    "ai": {
+      "agents": [
+        "ai/agents/symfony-site-builder.md",
+        "ai/agents/symfony-tester.md"
+      ],
+      "skills": [
+        "ai/skills/symfony-scenarios"
+      ],
+      "commands": [
+        "ai/commands/symfony-test.md"
+      ],
+      "prompts": [
+        "ai/prompts/symfony-build-and-test.md",
+        "ai/prompts/symfony-scenarios-for-a-role.md"
+      ]
+    },
+    "features": [
+      "features/symfony.feature"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@webship.co/workspace-plugin-api": "^1.0.11",
+    "typescript": "^5.9.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
