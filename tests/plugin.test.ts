@@ -51,6 +51,13 @@ test('the functions carry the names the core\'s tools look for, and never write 
   }
   assert.doesNotMatch(src, /^function build_symfony\(\)/m, 'the core\'s own example function is not redefined');
   assert.doesNotMatch(src, /--db-(host|database|username|password)|DB_(HOST|DATABASE|USERNAME|PASSWORD)=/, 'the container tool owns the database settings');
+  // The database only where DDEV gives it and another runtime does not: symfony_runtime_config, the stack's own values.
+  const own = src.slice(src.indexOf('function symfony_runtime_config() {'), src.indexOf('\n}\n', src.indexOf('function symfony_runtime_config() {')));
+  assert.match(own, /--database-url="mysql:\/\/db:db@db:3306\/db\?/);
+  assert.doesNotMatch(src.replace(own, ''), /--database-url|DATABASE_URL=/, 'the container tool owns the database settings');
+  assert.match(src.slice(src.indexOf('function symfony_build() {')), /if \[ "\$\{runtime\}" == 'ddev' \] ; then[\s\S]*ddev_up restart[\s\S]*else[\s\S]*symfony_runtime_config/, 'only on a runtime that is not DDEV');
+  assert.doesNotMatch(src.replace(/^\s*#.*$/gm, '').replace(/echo "https:\/\/\$\{PROJECT_NAME\}\.ddev\.site"/, ''), /ddev\.site/, 'ddev.site only as the answer of a core with no layer');
+  assert.doesNotMatch(src.replace(/^\s*#.*$/gm, ''), /(?<![.\w])(docker|podman|kubectl) |command ddev/, 'only `ddev <verb>`: the layer chooses');
   assert.match(src, /--project-type=symfony/);
   assert.match(src, /composer create-project "symfony\/symfony-demo/, 'the demo is the official one, made the way its own guide says');
   assert.match(src, /composer create-project "symfony\/skeleton[\s\S]*composer require webapp/, 'a new web app is made as the documentation makes one');
