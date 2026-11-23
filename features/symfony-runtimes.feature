@@ -5,7 +5,8 @@ Feature: An app on Docker Compose and on Kubernetes
 
   # Each scenario drives a real app of that runtime, built with cmd-symfony-project.sh --runtime: the first running
   # one the workspace holds of this platform. Without one it is skipped, with the reason. In the plugin's CI the
-  # Docker Compose app is the one the manifest's featuresSite builds.
+  # Docker Compose app is the one the manifest's featuresSite builds. The blog scenarios read the title of the
+  # demo's second post: its newest one is dated today at a random time of the day, and is not listed before it.
 
   @needs-runtime-docker @needs-platform-symfony
   Scenario: An app built on Docker Compose runs at its own address, with the DOCKER menu
@@ -26,7 +27,7 @@ Feature: An app on Docker Compose and on Kubernetes
   Scenario: The app on Docker Compose is installed: its blog and its login page
     Given I am on the folder of the "docker" site
      When I open "/en/blog/" on the "docker" site
-     Then I should see "Lorem ipsum"
+     Then I should see "Pellentesque vitae velit ex"
      When I open "/en/login" on the "docker" site
      Then I should see "Secure Sign in"
 
@@ -49,6 +50,6 @@ Feature: An app on Docker Compose and on Kubernetes
   Scenario: The app on Kubernetes is installed: its blog and its login page
     Given I am on the folder of the "kubernetes" site
      When I open "/en/blog/" on the "kubernetes" site
-     Then I should see "Lorem ipsum"
+     Then I should see "Pellentesque vitae velit ex"
      When I open "/en/login" on the "kubernetes" site
      Then I should see "Secure Sign in"
