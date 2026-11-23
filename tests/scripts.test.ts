@@ -201,3 +201,165 @@ test('the first feature names no platform in a step, and no password', () => {
   assert.doesNotMatch(feature, /password "/);
   assert.doesNotMatch(feature, /user create|I register/i, 'a suite never creates an account');
 });
+
+// ---- The runtimes: DDEV as before, and Docker Compose, Podman, Kubernetes, Lando and Docksal through the core's layer ----
+
+const ADDRESSES: Record<string, string> = {
+  docker: 'http://127.0.0.1:41234', podman: 'http://127.0.0.1:41234', lando: 'http://127.0.0.1:41234',
+  kubernetes: 'http://172.18.0.2:30080', docksal: 'http://site1.docksal.site',
+};
+
+/**
+ * Run the builder in a throwaway workspace with `ddev` replaced by a recorder, and the core's layer by stand-ins:
+ * `layer` is the runtime it answers with (runtime_of, rt_url), or '' for a core that has no layer yet. The
+ * recorder makes what `composer create-project` would have made: the composer.json, public/ (the demo's with its
+ * own .htaccess).
+ */
+function build(layer: string, env: Record<string, string> = {}) {
+  const p = project('symfony');
+  fs.rmSync(p.dir, { recursive: true });
+  const log = path.join(p.root, 'ddev.log');
+  const address = ADDRESSES[layer] || '';
+  const prelude = [
+    'ddev() { echo "ddev $*" >> "' + log + '" ; case "$*" in',
+    '  "composer create-project symfony/symfony-demo"*) mkdir -p public && echo "# the demo\'s own" > public/.htaccess && echo \'{"name": "symfony/symfony-demo"}\' > composer.json ;;',
+    '  "composer create-project symfony/skeleton"*) mkdir -p public && echo \'{"name": "symfony/skeleton"}\' > composer.json ;;',
+    'esac ; return 0 ; }',
+    'trim_project_name() { :; } ; drop_database() { :; } ; ddev_nodejs_version() { echo 24 ; } ; ddev_up() { ddev "$@" ; }',
+    layer ? `runtime_of() { echo "\${RUNTIME_ANSWER}" ; } ; rt_url() { [ "\${RUNTIME_ANSWER}" == ddev ] && echo "https://\${PROJECT_NAME}.ddev.site" || echo "${address}" ; }` : '',
+    `source ${FUNCTIONS}`,
+    'symfony_build',
+  ].join('\n');
+  const r = spawnSync('bash', ['-c', prelude], { encoding: 'utf8', input: '', env: { ...process.env, WORKSPACE_ROOT: p.root, WORKSPACE_SCRIPTS: p.scripts, doc_name: 'dev', PROJECT_NAME: 'site1',
+    DEMO: 'yes', INSTALL: 'yes', ADD_USERS: 'no', PRODUCTION: 'no', LAUNCH: 'no', SYMFONY_VERSION: '', PHP_VERSION: '8.4', distribution_webroot: 'public', RUNTIME: '_none_', RUNTIME_ANSWER: layer || 'ddev',
+    account_name: 'webmaster', account_pass: 'CHANGE_ME.123123', account_mail: 'webmaster@example.com', ...env } });
+  const calls = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter((c) => c.startsWith('ddev ')).map((c) => c.replace(/\.webship-accounts-\d+\./g, '.webship-accounts-N.')) : [];
+  return { r, calls, dir: path.join(p.root, 'dev', 'site1'), root: p.root };
+}
+
+test('on DDEV the build is what it was: the same commands with the layer and without it, the app in the project root', () => {
+  for (const demo of ['yes', 'no']) {
+    const without = build('', { DEMO: demo });
+    const withLayer = build('ddev', { DEMO: demo });
+    for (const b of [without, withLayer]) {
+      assert.strictEqual(b.r.status, 0, b.r.stderr + b.r.stdout);
+      assert.match(b.r.stdout, demo === 'yes' ? /Go to https:\/\/site1\.ddev\.site\/en\/login and log in as webmaster/ : /Go to https:\/\/site1\.ddev\.site$/m);
+      assert.ok(!fs.existsSync(path.join(b.dir, '.env.local')), 'DDEV gives the app its database: the builder writes none');
+    }
+    assert.deepStrictEqual(withLayer.calls, without.calls);
+    assert.ok(without.calls.includes('ddev restart'));
+    assert.ok(without.calls.includes(demo === 'yes' ? 'ddev composer create-project symfony/symfony-demo --no-interaction' : 'ddev composer create-project symfony/skeleton --no-interaction'));
+  }
+  assert.ok(!fs.existsSync(path.join(build('', { DEMO: 'no' }).dir, 'public', '.htaccess')), 'DDEV serves the app with nginx: no .htaccess');
+});
+
+test('on Docker Compose, Podman, Kubernetes, Lando and Docksal the app gets the database and the mailer of the stack, and Apache its rules', () => {
+  for (const demo of ['yes', 'no']) {
+    const ddev = build('ddev', { DEMO: demo }).calls;
+    for (const runtime of Object.keys(ADDRESSES)) {
+      const address = ADDRESSES[runtime];
+      const b = build(runtime, { RUNTIME: runtime, DEMO: demo });
+      assert.strictEqual(b.r.status, 0, runtime + ': ' + b.r.stderr + b.r.stdout);
+      // The same commands, with the project root named, and no restart: the builder writes what DDEV's start writes.
+      const expected = ddev.filter((c) => c !== 'ddev restart').map((c) => c.replace(/^(ddev composer create-project \S+) --no-interaction$/, '$1 . --no-interaction'));
+      assert.deepStrictEqual(b.calls, expected, `${runtime}, demo ${demo}`);
+      assert.ok(!b.calls.some((c) => /^ddev dotenv /.test(c)), `${runtime}: no verb the layer does not know`);
+      const local = fs.readFileSync(path.join(b.dir, '.env.local'), 'utf8');
+      assert.match(local, /^DATABASE_URL="mysql:\/\/db:db@db:3306\/db\?serverVersion=10\.11\.0-MariaDB&charset=utf8mb4"$/m, runtime);
+      assert.match(local, new RegExp(`^MAILER_DSN=smtp://${runtime === 'lando' ? 'mailpit' : 'mail'}:1025$`, 'm'), runtime);
+      const htaccess = fs.readFileSync(path.join(b.dir, 'public', '.htaccess'), 'utf8');
+      if (demo === 'yes') assert.strictEqual(htaccess, "# the demo's own\n", 'an .htaccess the app ships is kept');
+      else assert.match(htaccess, /RewriteRule \^ %\{ENV:BASE\}\/index\.php \[L\]/, `${runtime}: every path to index.php`);
+      assert.ok(!fs.existsSync(path.join(b.dir, '.ddev')), `${runtime}: nothing of DDEV's is written`);
+      assert.match(b.r.stdout, new RegExp(`Go to ${address.replace(/[.]/g, '\\.')}${demo === 'yes' ? '/en/login' : '$'}`, 'm'), runtime);
+      assert.doesNotMatch(b.r.stdout + local, /ddev\.site/, runtime);
+    }
+  }
+});
+
+test('a key of .env.local is set where the file has it, and added when it has none; DDEV\'s own verb on DDEV', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'symfony-dotenv-'));
+  const file = path.join(dir, '.env.local');
+  fs.writeFileSync(file, 'APP_ENV=dev\n#APP_DEBUG=1\n');
+  const r = bash(`runtime_of() { echo docker ; } ; symfony_dotenv_set ${file} --app-env=prod --app-debug=0 --mailer-dsn=smtp://mail:1025`);
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(fs.readFileSync(file, 'utf8'), 'APP_ENV=prod\nAPP_DEBUG=0\nMAILER_DSN=smtp://mail:1025\n');
+  const log = path.join(dir, 'ddev.log');
+  bash(`runtime_of() { echo ddev ; } ; symfony_dotenv_set .env.local --app-env=prod`, { DDEV_LOG: log });
+  assert.strictEqual(fs.readFileSync(log, 'utf8'), 'ddev dotenv set .env.local --app-env=prod\n');
+});
+
+test('--runtime on a workspace without the runtime layer is refused, never built on DDEV in silence', () => {
+  const b = build('', { RUNTIME: 'docker' });
+  assert.strictEqual(b.r.status, 1);
+  assert.match(b.r.stdout, /--runtime docker needs a Webship Workspace with the container runtimes/);
+  assert.deepStrictEqual(b.calls, []);
+  assert.ok(!fs.existsSync(b.dir), 'no folder was made');
+  assert.strictEqual(build('', { RUNTIME: 'ddev' }).r.status, 0);
+});
+
+test('the builder takes --runtime, with the runtimes of the core\'s own builders', () => {
+  const args = fs.readFileSync(path.join(PKG, 'scripts', 'args', 'arg-symfony.sh'), 'utf8');
+  assert.match(args, /parser\.add_argument\('--runtime',\s+dest='RUNTIME',\s+default="_none_",\s+choices=\['ddev', 'docker', 'podman', 'kubernetes', 'lando', 'docksal'\],/);
+});
+
+/** An app of another runtime: compose.yaml with its type, no .ddev folder. */
+function runtimeApp() {
+  const p = project('symfony');
+  fs.rmSync(path.join(p.dir, '.ddev'), { recursive: true });
+  fs.writeFileSync(path.join(p.dir, 'compose.yaml'), 'name: site1\nx-webship:\n  runtime: docker\n  type: symfony\n  port: 41234\n');
+  return p;
+}
+const LAYER = 'runtime_of() { echo docker ; } ; rt_is_platform() { grep -q "^  type: $2$" "$1/compose.yaml" 2>/dev/null ; } ; rt_url() { echo http://127.0.0.1:41234 ; } ; ';
+
+test('an app is known on every runtime: the layer reads its type', () => {
+  const rt = runtimeApp();
+  assert.strictEqual(bash(`${LAYER} symfony_is_project ${rt.dir}`).status, 0);
+  assert.notStrictEqual(bash(`symfony_is_project ${rt.dir}`).status, 0, 'an older core reads no compose.yaml');
+  assert.strictEqual(bash(`symfony_is_project ${project('symfony').dir}`).status, 0, 'DDEV as before');
+  assert.notStrictEqual(bash(`${LAYER} symfony_is_project ${project('drupal11').dir}`).status, 0);
+});
+
+test('the console tool and the test users work on an app of a runtime, and say its address', () => {
+  const rt = runtimeApp();
+  const log = path.join(rt.root, 'ddev.log');
+  const env = { WORKSPACE_ROOT: rt.root, doc_name: 'dev', PROJECT_NAME: 'site1', DDEV_LOG: log };
+  const add = bash(`${LAYER} set_symfony_users ; add_symfony_users`, env);
+  assert.strictEqual(add.status, 0, add.stdout + add.stderr);
+  assert.match(fs.readFileSync(log, 'utf8'), /^administrator\|administrator@example\.com\|[^|]+\|admin$/m);
+  const what = bash(`${LAYER} trim_project_name() { :; } ; RUN=_none_ ; UPDATE=no ; DEV=no ; PROD=no ; RELOAD_DATA=no ; ADD_USERS=no ; CANCEL_USERS=no ; symfony_console_tool`, env);
+  assert.strictEqual(what.status, 0, what.stdout + what.stderr);
+  assert.match(what.stdout, /^dev\/site1: .*the demo application at http:\/\/127\.0\.0\.1:41234$/m);
+  assert.doesNotMatch(what.stdout, /ddev\.site/);
+  fs.writeFileSync(log, '');
+  const prod = bash(`${LAYER} trim_project_name() { :; } ; RUN=_none_ ; UPDATE=no ; DEV=no ; PROD=yes ; RELOAD_DATA=no ; ADD_USERS=no ; CANCEL_USERS=no ; symfony_console_tool`, env);
+  assert.strictEqual(prod.status, 0, prod.stdout + prod.stderr);
+  assert.match(fs.readFileSync(path.join(rt.dir, '.env.local'), 'utf8'), /^APP_ENV=prod\nAPP_DEBUG=0$/m);
+  assert.doesNotMatch(fs.readFileSync(log, 'utf8'), /^ddev dotenv /m);
+});
+
+test('the feature of the runtimes drives an app of the platform, and names no platform in a step', () => {
+  const feature = fs.readFileSync(path.join(PKG, 'features', 'symfony-runtimes.feature'), 'utf8');
+  const scenarios = feature.split(/\n(?=  @needs-runtime-)/).slice(1);
+  assert.strictEqual(scenarios.length, 6);
+  for (const s of scenarios) assert.match(s, /^  @needs-runtime-(docker|kubernetes) @needs-platform-symfony\n  Scenario: /);
+  const steps = feature.split('\n').filter((l) => /^\s*(Given|When|Then|And|But) /.test(l));
+  for (const s of steps) assert.doesNotMatch(s, /symfony/i, s);
+  assert.doesNotMatch(feature, /ddev\.site|127\.0\.0\.1/);
+  const manifest = JSON.parse(fs.readFileSync(path.join(PKG, 'package.json'), 'utf8')).workspacePlugin;
+  assert.ok(manifest.features.includes('features/symfony-runtimes.feature'));
+  assert.match(manifest.featuresSite, /^cmd-symfony-project\.sh ci-symfony( [A-Za-z0-9._=-]+)* --runtime docker$/);
+});
+
+test('the demo application is known by its name, and from its release 3 (no name) by its blog and its fixtures', () => {
+  const p = project('symfony');
+  assert.strictEqual(bash(`cd ${p.dir} && symfony_is_demo`).status, 0, 'by its name');
+  fs.writeFileSync(path.join(p.dir, 'composer.json'), JSON.stringify({ type: 'project', license: 'proprietary' }));
+  assert.notStrictEqual(bash(`cd ${p.dir} && symfony_is_demo`).status, 0, 'neither name nor files');
+  fs.mkdirSync(path.join(p.dir, 'src', 'Controller'), { recursive: true });
+  fs.mkdirSync(path.join(p.dir, 'src', 'DataFixtures'), { recursive: true });
+  fs.writeFileSync(path.join(p.dir, 'src', 'Controller', 'BlogController.php'), '<?php\n');
+  fs.writeFileSync(path.join(p.dir, 'src', 'DataFixtures', 'AppFixtures.php'), '<?php\n');
+  assert.strictEqual(bash(`cd ${p.dir} && symfony_is_demo`).status, 0, 'by its files');
+  assert.notStrictEqual(bash(`cd ${project('symfony', false).dir} && symfony_is_demo`).status, 0, 'a new web app is not the demo');
+});

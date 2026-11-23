@@ -4,7 +4,9 @@
 
 # Installed by the Symfony plugin (plugins.sh --install symfony); __WORKSPACE__ is the workspace it was installed into.
 #
-# Build a Symfony app in a container, at https://<name>.ddev.site: a new web app as the documentation
+# Build a Symfony app in a container, on DDEV (the default) at https://<name>.ddev.site, or with
+# --runtime docker, podman, kubernetes, lando or docksal on that runtime, at the address the build
+# prints: a new web app as the documentation
 # makes one (symfony/skeleton with the webapp pack), or with --demo the official demo application.
 # With --install its data is loaded and, for the demo, the workspace account is an administrator; with
 # --add-users it also gets the default accounts.

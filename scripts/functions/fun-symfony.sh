@@ -5,8 +5,17 @@
 #
 # Placed by `plugins.sh --install symfony` in core/scripts/plugins/symfony/functions/, where
 # bootstrap sources it after the core's own functions. Everything runs in the project's container
-# (DDEV by default: `ddev exec bin/console …`, `ddev composer …`), never on the host. The container
-# tool writes the database and the mailer of the app into its .env.local, so nothing here writes any.
+# (DDEV by default: `ddev exec bin/console …`, `ddev composer …`), never on the host. On DDEV the
+# container tool gives the app its database and its mailer, so nothing here writes any.
+#
+# The runtimes: an app is built on DDEV, or with --runtime on Docker Compose, Podman, Kubernetes, Lando
+# or Docksal. The commands are the same on each: `ddev <verb>` is DDEV itself on a DDEV project, and on
+# another runtime the core's layer (fun-runtime.sh) gives the verb its meaning there. What differs is
+# behind symfony_runtime: the address (symfony_url), `.env.local` (symfony_dotenv_set: DDEV has a verb
+# of its own for it, the layer has none), the folder `composer create-project` makes the app in (DDEV
+# takes the project root, the layer is told "."), and what DDEV gives the app and the other runtimes do
+# not (symfony_runtime_config: the database of the project's own stack, db/db/db on the host db, its
+# mail catcher, and the .htaccess Apache needs, since DDEV serves the app with nginx).
 #
 # Four names are the ones the core's tools look for, under the DDEV project type `symfony`:
 #   set_symfony_users        the default accounts          (cmd-tools-add-users.sh <project> symfony)
@@ -34,9 +43,109 @@ function set_symfony_users() {
   user_user_role='user' ;
 }
 
-# Is this folder a Symfony project? Its DDEV project type says so.
+# The runtime of the project in this folder, or of a new build (--runtime, else the workspace's
+# setting, else DDEV). A core without the runtime layer has DDEV only.
+function symfony_runtime() {
+  if declare -f runtime_of > /dev/null ; then runtime_of ; else echo 'ddev' ; fi
+}
+
+# The address of the app in this folder: https://<name>.ddev.site on DDEV, http://127.0.0.1:<port> on
+# Docker Compose, Podman and Lando, the node's address and a port on Kubernetes, http://<name>.docksal.site
+# on Docksal. Asked after `ddev config`.
+function symfony_url() {
+  if declare -f rt_url > /dev/null ; then rt_url ; else echo "https://${PROJECT_NAME}.ddev.site" ; fi
+}
+
+# Set keys of a .env file: DDEV's own `ddev dotenv set <file> --a-key=value …`, and on another runtime
+# the same keys (A_KEY=value), each where the file has it (commented out or not), else at the end.
+function symfony_dotenv_set() {
+  if [ "$(symfony_runtime)" == 'ddev' ] ; then
+    ddev dotenv set "$@" ;
+    return $? ;
+  fi
+  python3 - "$@" <<'PYEOF'
+import re, sys
+path, pairs = sys.argv[1], []
+for arg in sys.argv[2:]:
+    m = re.match(r'^--([a-z0-9][a-z0-9-]*)=(.*)$', arg, re.S)
+    if not m:
+        sys.exit('symfony_dotenv_set: --a-key=value, not ' + arg)
+    value = m.group(2)
+    if re.search(r'[\s#"\'$\\&?]', value):
+        value = '"' + value.replace('\\', '\\\\').replace('"', '\\"') + '"'
+    pairs.append((m.group(1).upper().replace('-', '_'), value))
+try:
+    lines = open(path).read().split('\n')
+except FileNotFoundError:
+    lines = []
+if lines and lines[-1] == '':
+    lines.pop()
+for key, value in pairs:
+    found = [i for i, l in enumerate(lines) if re.match(r'^\s*' + re.escape(key) + r'\s*=', l)] \
+        or [i for i, l in enumerate(lines) if re.match(r'^\s*#\s*' + re.escape(key) + r'\s*=', l)]
+    if found:
+        lines[found[0]] = key + '=' + value
+    else:
+        lines.append(key + '=' + value)
+open(path, 'w').write('\n'.join(lines) + '\n')
+PYEOF
+}
+
+# What DDEV gives a symfony project, and the other runtimes do not: the database of the project's own
+# stack (db, db, db on the host db, as on every runtime) and its mail catcher (Mailpit on the host
+# mail, Lando's on mailpit, port 1025), in .env.local; and, since the web server there is Apache, not
+# DDEV's nginx, the .htaccess that sends every path to public/index.php (the one of symfony/apache-pack),
+# when the app has none. Only on a runtime that is not DDEV, in the project folder.
+function symfony_runtime_config() {
+  local mail_host='mail' ;
+  [ "$(symfony_runtime)" == 'lando' ] && mail_host='mailpit' ;
+  symfony_dotenv_set .env.local \
+    --database-url="mysql://db:db@db:3306/db?serverVersion=10.11.0-MariaDB&charset=utf8mb4" \
+    --mailer-dsn="smtp://${mail_host}:1025" || return 1 ;
+  [ -f "${distribution_webroot:-public}/.htaccess" ] && return 0 ;
+  cat > "${distribution_webroot:-public}/.htaccess" <<'HTACCESS'
+# Written by the Webship Workspace for Apache, the web server of its container runtimes: the file of
+# symfony/apache-pack, which sends every path that is not a file to index.php.
+DirectoryIndex index.php
+
+<IfModule mod_negotiation.c>
+    Options -MultiViews
+</IfModule>
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    RewriteCond %{REQUEST_URI}::$0 ^(/.+)/(.*)::\2$
+    RewriteRule .* - [E=BASE:%1]
+
+    RewriteCond %{HTTP:Authorization} .+
+    RewriteRule ^ - [E=HTTP_AUTHORIZATION:%0]
+
+    RewriteCond %{ENV:REDIRECT_STATUS} =""
+    RewriteRule ^index\.php(?:/(.*)|$) %{ENV:BASE}/$1 [R=301,L]
+
+    RewriteCond %{REQUEST_FILENAME} -f
+    RewriteRule ^ - [L]
+
+    RewriteRule ^ %{ENV:BASE}/index.php [L]
+</IfModule>
+
+<IfModule !mod_rewrite.c>
+    <IfModule mod_alias.c>
+        RedirectMatch 307 ^/$ /index.php/
+    </IfModule>
+</IfModule>
+HTACCESS
+}
+
+# Is this folder a Symfony project? Its project type says so: on DDEV in .ddev/config.yaml, on another
+# runtime in the x-webship block, both read by the core's rt_is_platform.
 function symfony_is_project() {
   local project_path="$1";
+  if declare -f rt_is_platform > /dev/null ; then
+    rt_is_platform "${project_path}" symfony ;
+    return $? ;
+  fi
   grep -qE '^type:[[:space:]]*"?symfony"?[[:space:]]*$' "${project_path}/.ddev/config.yaml" 2>/dev/null ;
 }
 
@@ -48,7 +157,7 @@ function symfony_enter_project() {
     return 1 ;
   fi
   if ! symfony_is_project "${project_path}" ; then
-    echo "${doc_name}/${PROJECT_NAME} is not a Symfony project (its .ddev/config.yaml does not say type: symfony)." ;
+    echo "${doc_name}/${PROJECT_NAME} is not a Symfony project (its project type is not symfony)." ;
     return 1 ;
   fi
   cd "${project_path}" || return 1 ;
@@ -134,9 +243,11 @@ function symfony_load_demo_data() {
   ddev exec bin/console doctrine:fixtures:load --env=dev --no-interaction || return 1 ;
 }
 
-# Is the app the demo application? Its composer.json says so.
+# Is the app the demo application? Its composer.json says so, or (from its release 3, whose composer.json
+# names no package) its blog controller and its own fixtures do.
 function symfony_is_demo() {
-  grep -q '"name": *"symfony/symfony-demo"' composer.json 2>/dev/null ;
+  grep -q '"name": *"symfony/symfony-demo"' composer.json 2>/dev/null && return 0 ;
+  [ -f src/Controller/BlogController.php ] && [ -f src/DataFixtures/AppFixtures.php ] ;
 }
 
 # Has the app accounts the plugin can write? The user entity of the demo application: a username, a
@@ -151,12 +262,12 @@ function symfony_has_accounts() {
 function symfony_set_environment() {
   local env="$1" ;
   if [ "${env}" == 'prod' ] ; then
-    ddev dotenv set .env.local --app-env=prod --app-debug=0 > /dev/null || return 1 ;
+    symfony_dotenv_set .env.local --app-env=prod --app-debug=0 > /dev/null || return 1 ;
     if ddev exec bin/console list asset-map --raw 2>/dev/null | grep -q '^asset-map:compile' ; then
       ddev exec bin/console asset-map:compile --quiet || return 1 ;
     fi
   else
-    ddev dotenv set .env.local --app-env=dev --app-debug=1 > /dev/null || return 1 ;
+    symfony_dotenv_set .env.local --app-env=dev --app-debug=1 > /dev/null || return 1 ;
     # The compiled assets of a live app would hide the ones the dev server serves.
     rm -rf public/assets ;
   fi
@@ -168,7 +279,12 @@ function symfony_set_environment() {
 # --install its database and its first account.
 function symfony_build() {
   trim_project_name ;
-  local base_url="https://${PROJECT_NAME}.ddev.site" ;
+  local base_url runtime ;
+  runtime="$(symfony_runtime)" ;
+  if [ "${RUNTIME:-_none_}" != '_none_' ] && [ "${RUNTIME}" != "${runtime}" ] ; then
+    echo "--runtime ${RUNTIME} needs a Webship Workspace with the container runtimes (webship/workspace#694): update the workspace, or build on DDEV." ;
+    exit 1 ;
+  fi
   local php_version="${PHP_VERSION:-${site_php_version:-8.4}}" ;
   local version="${SYMFONY_VERSION:-}" ;
 
@@ -181,21 +297,31 @@ function symfony_build() {
 
   ddev config --project-type=symfony --docroot="${distribution_webroot}" --project-name=${PROJECT_NAME} \
     --php-version=${php_version} --nodejs-version=$(ddev_nodejs_version) --auto || exit 1 ;
+  # The address is the runtime's to say, once the project is configured: never a written ddev.site.
+  base_url="$(symfony_url)" ;
   ddev_up start -y || exit 1 ;
 
+  # DDEV makes the app in the project root; the layer of another runtime is told so (".").
+  local into='' ;
+  [ "${runtime}" != 'ddev' ] && into='.' ;
   if [ "${DEMO}" == 'yes' ] ; then
-    ddev composer create-project "symfony/symfony-demo${version:+:${version}}" --no-interaction \
+    ddev composer create-project "symfony/symfony-demo${version:+:${version}}" ${into} --no-interaction \
       || { echo "composer create-project symfony/symfony-demo failed." ; exit 1 ; } ;
   else
-    ddev composer create-project "symfony/skeleton${version:+:${version}}" --no-interaction \
+    ddev composer create-project "symfony/skeleton${version:+:${version}}" ${into} --no-interaction \
       || { echo "composer create-project symfony/skeleton failed." ; exit 1 ; } ;
     # The container tool runs the app: no Docker Compose files from the recipes (the answer the DDEV
     # quickstart for Symfony gives to their question).
     ddev composer config --json extra.symfony.docker false || exit 1 ;
     ddev composer require webapp --no-interaction || { echo "composer require webapp failed." ; exit 1 ; } ;
   fi
-  # DDEV writes the database and the mailer of the container into .env.local on start.
-  ddev_up restart || exit 1 ;
+  if [ "${runtime}" == 'ddev' ] ; then
+    # DDEV writes the database and the mailer of the container into .env.local on start.
+    ddev_up restart || exit 1 ;
+  else
+    # What DDEV gives the app: the database and the mailer of the container, and its web server's rules.
+    symfony_runtime_config || { echo "The .env.local of the app could not be written." ; exit 1 ; } ;
+  fi
 
   if [ "${INSTALL}" == 'yes' ] ; then
     if symfony_is_demo ; then
@@ -327,7 +453,7 @@ function symfony_console_tool() {
     set_symfony_users ;
     cancel_symfony_users ;
   else
-    echo "${doc_name}/${PROJECT_NAME}: $(ddev exec bin/console --version 2>/dev/null | head -n 1)$(symfony_is_demo && echo ', the demo application') at https://${PROJECT_NAME}.ddev.site" ;
+    echo "${doc_name}/${PROJECT_NAME}: $(ddev exec bin/console --version 2>/dev/null | head -n 1)$(symfony_is_demo && echo ', the demo application') at $(symfony_url)" ;
     echo "" ; ddev exec bin/console about 2>/dev/null | sed -n '/Kernel/,/Environment/p' ;
     echo "" ; echo "Accounts:" ;
     if symfony_has_accounts ; then

@@ -83,8 +83,10 @@
       ]
     },
     "features": [
-      "features/symfony.feature"
-    ]
+      "features/symfony.feature",
+      "features/symfony-runtimes.feature"
+    ],
+    "featuresSite": "cmd-symfony-project.sh ci-symfony --demo --install --add-users --runtime docker"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

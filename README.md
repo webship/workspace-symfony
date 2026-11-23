@@ -71,6 +71,7 @@ Everything the builder runs for an app runs in the app's own container, through 
 | `ai/prompts/symfony-build-and-test.md`, `symfony-scenarios-for-a-role.md` | Two prompts: whole launch commands for a new session |
 | `src/index.ts` | `register(api)`: what the assistant is told about Symfony here |
 | `features/symfony.feature` | Scenarios for the dashboard's own browser suite |
+| `features/symfony-runtimes.feature` | The row, the test users and the pages of an app built on Docker Compose and on Kubernetes |
 
 The `workspacePlugin` block in `package.json` is the manifest the installer reads.
 
@@ -93,15 +94,70 @@ bash cmd-symfony-project.sh myapp --demo --install --add-users
 | `--add-users` | With `--install`: add the default accounts |
 | `--production` | Run the app as a live app runs: `APP_ENV=prod`, `APP_DEBUG=0` (error pages instead of the debug page, no debug toolbar, the assets compiled) |
 | `--php-version <x>` | The PHP of the project container (8.4 by default: the demo needs 8.4 or later) |
+| `--runtime <name>` | The container runtime to build on: `ddev` (the default), `docker`, `kubernetes`, `podman`, `lando` or `docksal`. See [Runtimes](#runtimes) |
 | `--launch` | Open the app when it is ready |
 
-The app answers at `https://myapp.ddev.site`, the demo's login at `/en/login`, its mail catcher at
+On DDEV the app answers at `https://myapp.ddev.site`, the demo's login at `/en/login`, its mail catcher at
 `https://myapp.ddev.site:8026`. The build runs `ddev config --project-type=symfony` with the
 Node.js of the workspace (24), makes the app with Composer in the web container
 (`composer create-project symfony/symfony-demo`, or `symfony/skeleton` and `composer require
 webapp`, without the Docker Compose files of the recipes: the container tool runs the app), and
 leaves the database and the mailer to the container tool (it writes them into `.env.local`): it
 writes none. A project of the same name is deleted first.
+
+
+### Runtimes
+
+```bash
+bash cmd-symfony-project.sh myapp --demo --install --add-users                        # DDEV, the default
+bash cmd-symfony-project.sh myapp --demo --install --add-users --runtime docker       # Docker Compose
+bash cmd-symfony-project.sh myapp --demo --install --add-users --runtime kubernetes   # a Kubernetes cluster
+bash cmd-symfony-project.sh myapp --demo --install --add-users --runtime lando        # Lando
+bash cmd-symfony-project.sh myapp --demo --install --add-users --runtime docksal      # Docksal
+```
+
+Without `--runtime` a build takes `container.runtime` of the workspace's `settings.yml`, then DDEV.
+It needs a Webship Workspace with the container runtimes
+([webship/workspace#694](https://github.com/webship/workspace/issues/694)); on an older one the
+builder refuses `--runtime` and builds on DDEV only. Lando and Docksal need a Workspace whose runtime
+layer has them ([webship/workspace#729](https://github.com/webship/workspace/issues/729),
+[#730](https://github.com/webship/workspace/issues/730)).
+
+| | DDEV | Docker Compose | Kubernetes | Podman | Lando | Docksal |
+| --- | --- | --- | --- | --- | --- | --- |
+| The demo, built with `--demo --install --add-users --production` | Yes | Yes | Yes | Not yet run | Yes | Yes |
+| The pages, and a login as the workspace account and the default accounts (`user` refused by the back office) | Yes | Yes | Yes | Not yet run | Yes | Yes |
+| `cmd-tools-symfony-console.sh`: status, `--run`, the accounts | Yes | Yes | Yes | Not yet run | Yes | Yes |
+| Test users, added and cancelled | Yes | Yes | Yes | Not yet run | Yes | Yes |
+| Mail caught by Mailpit (`--run "mailer:test …"`) | Yes | Yes | Yes | Not yet run | Yes | Yes |
+| The testing setup and the first feature | Yes | Yes | Yes | Not yet run | Yes | Yes |
+| The step pack's examples (63 scenarios) | Yes | Yes | Yes | Not yet run | Yes | Yes |
+| Export and import the database | Yes | Yes | Yes | Not yet run | Yes | Yes |
+| The row in the dashboard, and remove | Yes | Yes | Yes | Not yet run | Yes | Yes |
+| A new web app (`symfony/skeleton` and `webapp`): build and its pages | Not yet run | Yes | Not yet run | Not yet run | Not yet run | Not yet run |
+
+"Yes" means it was run on a real app of that runtime. Podman runs the same code as Docker Compose
+and was not run yet.
+
+| Runtime | The app's address | What the project carries |
+| --- | --- | --- |
+| DDEV | `https://myapp.ddev.site` | `.ddev/config.yaml` |
+| Docker Compose | `http://127.0.0.1:<port>`, printed by the build | `compose.yaml`, `.webship/runtime/Dockerfile` |
+| Kubernetes | `http://<node address>:<port>`, printed by the build | The same, and `k8s/` (the namespace `ws-myapp`) |
+| Lando | `http://127.0.0.1:<port>`, printed by the build | `.lando.yml` (Lando's proxy stays off) |
+| Docksal | `http://myapp.docksal.site`, on Docksal's own proxy | `.docksal/docksal.env`, `.docksal/docksal.yml` |
+
+What differs on Docker Compose, Kubernetes, Lando and Docksal:
+
+- **`.env.local`** gets what DDEV gives the app: `DATABASE_URL` of the project's own stack (`db`/`db`/`db` on the host `db`, MariaDB 10.11) and `MAILER_DSN` of its mail catcher (`smtp://mail:1025`, `smtp://mailpit:1025` on Lando). Nothing personal; on DDEV the builder still writes none.
+- **The web server** is Apache, not DDEV's nginx: when the app has no `public/.htaccess` (a new web app has none, the demo ships its own), the builder writes the one of `symfony/apache-pack`, which sends every path to `index.php`.
+- **`.env.local` keys** (`--prod`, `--dev` of the console tool, `--production` of the builder) are set by the plugin (`symfony_dotenv_set`): `ddev dotenv` is DDEV's own.
+- **`composer create-project`** is told the project root (`.`), as DDEV takes it.
+- **HTTPS and a host name** are DDEV's: a runtime's address is plain HTTP.
+
+The same commands work on every runtime: `cmd-tools-symfony-console.sh`, `cmd-tools-add-users.sh`,
+`cmd-tools-testing.sh`. The pattern is the Workspace's
+[`core/docs/plugins-on-runtimes.md`](https://github.com/webship/workspace/blob/1.0.x/core/docs/plugins-on-runtimes.md).
 
 ### Work on an app
 

@@ -40,12 +40,14 @@ bash cmd-symfony-project.sh myapp --demo --install --add-users
 | `--php-version <x>` | The PHP of the project container (8.4 by default; the demo needs 8.4 or later). |
 | `--launch` | Opens the app when it is ready. |
 
-The app answers at `https://<name>.ddev.site`, the demo's login at `/en/login`. The build runs
+On DDEV the app answers at `https://<name>.ddev.site`, the demo's login at `/en/login`. The build runs
 `ddev config --project-type=symfony` with the Node.js of the workspace (24), makes the app with
 Composer in the web container, and leaves the database and the mailer to the container tool (it
 writes them into `.env.local`): it writes none. The builder **deletes a project of the same name
 first**: a build is a clean slate, so never point it at an app somebody still needs. The name is a
 folder, a container project and a host name: short, lowercase, letters and digits.
+
+With `--runtime docker`, `podman`, `kubernetes`, `lando` or `docksal` the app is built on that runtime instead, at the address the build prints (`http://127.0.0.1:<port>`, the node's address and a port, or `http://<name>.docksal.site`): never write a `ddev.site` address for such an app. Its mailbox is at the address `rt_mail_url` gives, and the same commands work on it.
 
 ## Work on an app
 
@@ -63,7 +65,7 @@ bash cmd-tools-symfony-console.sh myapp --cancel-users                   # and a
 
 Inside the project folder, `ddev exec bin/console <command>` is the same console, and
 `ddev composer`, `ddev export-db --file=…`, `ddev import-db --file=…` are the tools for everything
-else. The mail the app sends lands in the project's mail catcher at `https://<name>.ddev.site:8026`.
+else. The mail the app sends lands in the project's mail catcher (on DDEV at `https://<name>.ddev.site:8026`).
 
 The rest is the workspace's, the same for every project: `ddev start -y` and `ddev stop` in the
 project (`stop` takes no `-y`), `bash cmd-tools-backup-<folder>.sh <name>`,
